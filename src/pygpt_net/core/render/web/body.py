@@ -10,6 +10,7 @@
 # ================================================== #
 
 import os
+from html import escape as _html_escape
 from json import dumps as _json_dumps
 from random import shuffle as _shuffle
 from pygpt_net.item.render_attachment import attachment_type, attachment_paths
@@ -442,6 +443,19 @@ class Body:
         icon_path = os.path.join(app_path, "data", "icons", f"{icon}.svg")
         return f'<img src="file://{icon_path}" class="action-img" title="{title}" alt="{title}" data-id="{item.id}">'
 
+    @staticmethod
+    def escape(value) -> str:
+        """
+        Escape a value for safe use in HTML text and attributes.
+
+        URLs, file names and document metadata can originate from the model or
+        from tool output, so they must never be interpolated into markup raw.
+
+        :param value: Any value (converted to str)
+        :return: HTML-escaped string
+        """
+        return _html_escape(str(value if value is not None else ""), quote=True)
+
     def get_image_html(
             self,
             url: str,
@@ -468,15 +482,19 @@ class Body:
                 if os.path.exists(webm_path):
                     source_url = self.window.core.filesystem.get_local_url(webm_path, ctx=ctx)
                     ext = ".webm"
+            safe_url = self.escape(url)
+            safe_source = self.escape(source_url)
+            safe_ext = self.escape(ext[1:])
             return f'''
-            <div class="extra-src-video-box" title="{url}">
+            <div class="extra-src-video-box" title="{safe_url}">
                 <video class="video-player" controls>
-                    <source src="{source_url}" type="video/{ext[1:]}">
+                    <source src="{safe_source}" type="video/{safe_ext}">
                 </video>
             </div>
             '''
-        url_preview = f"bridge://open_image/{url}"
-        return f'<div class="extra-src-img-box" title="{url}"><div class="img-outer"><div class="img-wrapper"><a href="{url_preview}"><img src="{url}" class="image"></a></div></div></div><br/>'
+        safe_url = self.escape(url)
+        url_preview = f"bridge://open_image/{safe_url}"
+        return f'<div class="extra-src-img-box" title="{safe_url}"><div class="img-outer"><div class="img-wrapper"><a href="{url_preview}"><img src="{safe_url}" class="image"></a></div></div></div><br/>'
 
     def get_url_html(
             self,
@@ -496,7 +514,8 @@ class Body:
         icon_path = os.path.join(app_path, "data", "icons", "url.svg").replace("\\", "/")
         icon = f'<img src="file://{icon_path}" class="extra-src-icon">'
         num_str = f" [{num}]" if (num is not None and num_all is not None and num_all > 1) else ""
-        return f'{icon}<a href="{url}" title="{url}">{url}</a> <small>{num_str}</small>'
+        safe_url = self.escape(url)
+        return f'{icon}<a href="{safe_url}" title="{safe_url}">{safe_url}</a> <small>{num_str}</small>'
 
     def get_docs_html(self, docs: List[Dict]) -> str:
         """
@@ -513,8 +532,10 @@ class Body:
         try:
             for item in docs:
                 for uuid, doc_json in item.items():
-                    entries = ", ".join(f"<b>{k}:</b> {doc_json[k]}" for k in doc_json)
-                    src_parts.append(f"<p><small>[{num}] {uuid}: {entries}</small></p>")
+                    entries = ", ".join(
+                        f"<b>{self.escape(k)}:</b> {self.escape(doc_json[k])}" for k in doc_json
+                    )
+                    src_parts.append(f"<p><small>[{num}] {self.escape(uuid)}: {entries}</small></p>")
                     num += 1
                     if num >= limit:
                         break
@@ -555,7 +576,7 @@ class Body:
         name = os.path.basename(path) or path
         if len(name) > 100:
             name = name[:97] + "..."
-        return f'{icon} <a href="{url}">{name}</a> <b>{num_str}</b>'
+        return f'{icon} <a href="{self.escape(url)}">{self.escape(name)}</a> <b>{num_str}</b>'
 
     def prepare_tool_extra(self, ctx: CtxItem) -> str:
         """
