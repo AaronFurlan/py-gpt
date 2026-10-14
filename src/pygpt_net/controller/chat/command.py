@@ -9,10 +9,11 @@
 # Updated Date: 2026.09.12 17:55:00                  #
 # ================================================== #
 
+import threading
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal, Slot, QEventLoop, QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from pygpt_net.core.events import KernelEvent, RenderEvent, Event
 from pygpt_net.core.bridge import BridgeContext
@@ -43,12 +44,76 @@ class Command(QObject):
         return self.pending_safety_ctx is not None
 
     def _get_safety_warning(self, ctx: CtxItem) -> str:
-        """Build localized warning text with optional provider details."""
-        warning = trans("computer.safety.warning")
-        details = self.window.core.security.get_computer_safety_messages(ctx)
-        if details:
-            warning += "\n\n" + "\n".join(details)
-        return warning
+        """Build localized warning text for the confirmation dialog.
+
+        Covers both gates sharing the dialog: provider-flagged Computer Use
+        safety checks and locally configured tools that require confirmation.
+        """
+        security = self.window.core.security
+        parts = []
+        if security.has_pending_computer_safety(ctx) is True:
+            warning = trans("computer.safety.warning")
+            details = security.get_computer_safety_messages(ctx)
+            if isinstance(details, list) and details:
+                warning += "\n\n" + "\n".join(details)
+            parts.append(warning)
+        cmd_lines = security.get_command_confirmation_messages(getattr(ctx, "cmds", None))
+        if isinstance(cmd_lines, list) and cmd_lines:
+            parts.append(trans("commands.confirm.warning") + "\n\n" + "\n".join(cmd_lines))
+        if not parts:
+            parts.append(trans("computer.safety.warning"))
+        return "\n\n".join(parts)
+
+    def confirm_commands(self, ctx: CtxItem, cmds: list) -> bool:
+        """
+        Ask the user before executing tools that require confirmation.
+
+        This is the synchronous gate used directly in front of plugin execution
+        (chat, agents, experts, force calls). It returns True when execution may
+        continue and False when the user rejected it or the request was stopped.
+        A confirmation already granted for this ctx (e.g. by the asynchronous
+        pause in handle()) is honoured without asking again.
+
+        :param ctx: CtxItem
+        :param cmds: commands about to be executed
+        :return: True if execution is allowed
+        """
+        security = self.window.core.security
+        if security.should_halt_commands(ctx, cmds) is not True:
+            return True
+        if self.window.controller.kernel.stopped():
+            return False
+        ctx.cmds = cmds  # the dialog lists ctx.cmds
+
+        if self.window.controller.kernel.is_main_thread():
+            # Synchronous modal question on the GUI thread.
+            lines = security.get_command_confirmation_messages(cmds)
+            msg = trans("commands.confirm.warning")
+            if isinstance(lines, list) and lines:
+                msg += "\n\n" + "\n".join(lines)
+            answer = QMessageBox.question(
+                self.window,
+                trans("commands.confirm.title"),
+                msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                security.mark_commands_rejected(ctx)
+                self.log("[cmd] Tool execution rejected by user.")
+                return False
+            security.mark_commands_confirmed(ctx)
+            self.log("[cmd] Tool execution explicitly confirmed by user.")
+            return True
+
+        # Worker/bridge thread (agents): queue the dialog on the GUI thread and
+        # wait here until the user decides or the request is stopped.
+        resumed = threading.Event()
+        self.pause_for_safety_confirmation(ctx, resume_callback=resumed.set)
+        while not resumed.wait(0.1):
+            if self.window.controller.kernel.stopped():
+                return False
+        return security.is_commands_confirmed(ctx) is True
 
     def pause_for_safety_confirmation(self, ctx: CtxItem, resume_callback=None):
         """Pause a provider-flagged Computer Use operation before executing local actions."""
@@ -137,6 +202,7 @@ class Command(QObject):
 
         self._hide_safety_dialog()
         self.window.core.security.mark_computer_safety_confirmed(pending)
+        self.window.core.security.mark_commands_confirmed(pending)
         self.log("[computer] Potentially unsafe operation explicitly confirmed by user.")
 
         # The original request is still active. Keep ordinary input locked while
@@ -158,6 +224,7 @@ class Command(QObject):
         if not isinstance(getattr(pending, "extra", None), dict):
             pending.extra = {}
         pending.extra["computer_safety_rejected"] = True
+        self.window.core.security.mark_commands_rejected(pending)
         self.log("[computer] Potentially unsafe operation rejected by user.")
 
         # A rejected safety prompt is equivalent to stopping the current request:
@@ -269,9 +336,12 @@ class Command(QObject):
             ctx.cmds = cmds  # append commands to ctx
             self.log("[cmd] Command call received...")
 
-            # Computer Use provider safety checks: pause before executing the action.
+            # Pause before executing the action when either a Computer Use
+            # provider safety check is pending or one of the tools is listed as
+            # requiring explicit user confirmation.
             if (not internal
-                    and self.window.core.security.should_halt_computer(ctx)):
+                    and (self.window.core.security.should_halt_computer(ctx)
+                         or self.window.core.security.should_halt_commands(ctx) is True)):
                 self.pause_for_safety_confirmation(ctx)
                 return True
 

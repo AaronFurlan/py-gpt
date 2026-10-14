@@ -641,6 +641,20 @@ class Plugins:
         if len(commands) == 0:
             return
 
+        # Security gate: tools listed for confirmation must be approved by the
+        # user before anything is executed on the host. A rejection is reported
+        # back to the model as the tool result instead of running the command.
+        if self.window.controller.chat.command.confirm_commands(ctx, commands) is False:
+            self.log("Plugin commands rejected by user.")
+            ctx.results = [
+                {
+                    "request": {"cmd": cmd.get("cmd")},
+                    "result": "Execution rejected by user.",
+                }
+                for cmd in commands
+            ]
+            return ctx.results
+
         event = Event(event_type, {'commands': commands})
         self.log("Executing plugin commands..." if event_type == Event.CMD_EXECUTE else "Executing inline plugin commands...")
         wait_str = trans('status.cmd.wait')
@@ -656,6 +670,8 @@ class Plugins:
         current = self.window.ui.get_status()
         if current == wait_str:
             self.window.update_status("")
+        # a confirmation is valid for exactly one dispatch
+        self.window.core.security.clear_commands_confirmation(ctx)
         return ctx.results
 
     def apply_cmds(

@@ -445,6 +445,8 @@
   "security.commands.blacklist.linux": "",
   "security.commands.blacklist.macos": "",
   "security.commands.blacklist.windows": "",
+  "security.commands.confirm.enabled": true,
+  "security.commands.confirm.list": "shell_exec, python_exec, python_sys_exec, ipython_exec, ipython_sys_exec, fs_delete_file, fs_rmdir, fs_move, fs_save_file, fs_append_file, fs_copy_file, fs_copy_dir, fs_download_file, fs_unpack_archive, srv_exec, srv_put, srv_rm, srv_mkdir, smtp_send, web_server_start, win_click, win_drag, win_keys_send, win_keys_text, win_clipboard_set, win_close, win_focus, win_foreground, win_hide, win_show, win_maximize, win_minimize, win_restore, win_move_resize, win_set_opacity, win_always_on_top, win_cursor_set, mouse_move, mouse_click, mouse_scroll, mouse_drag, keyboard_key, keyboard_keys, keyboard_type, open_web_browser, navigate, go_back, go_forward, search, click, click_at, double_click, hover_at, type, type_text_at, keypress, key_combination, scroll, scroll_at, scroll_document, drag, drag_and_drop, move",
   "security.commands.whitelist.enabled": false,
   "security.commands.whitelist.linux": "ls, pwd, cat, head, tail, grep, rg, find, which, whereis, file, stat, du, df, wc, sort, uniq, cut, tr, sed, awk, echo, printf, date, uname, whoami, id, hostname, basename, dirname, realpath, readlink, diff, cmp, comm",
   "security.commands.whitelist.macos": "ls, pwd, cat, head, tail, grep, rg, find, which, file, stat, du, df, wc, sort, uniq, cut, tr, sed, awk, echo, printf, date, uname, whoami, id, hostname, basename, dirname, realpath, readlink, diff, cmp, comm, mdfind, sw_vers",

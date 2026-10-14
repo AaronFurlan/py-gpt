@@ -10,7 +10,9 @@
 # ================================================== #
 
 import os
+import json
 import re
+from fnmatch import fnmatchcase
 import shlex
 from typing import Iterable, List, Optional
 
@@ -30,6 +32,22 @@ class Security:
     WHITELIST_KEY_PREFIX = "security.commands.whitelist."
     BLACKLIST_KEY_PREFIX = "security.commands.blacklist."
     COMPUTER_HALT_INSECURE_KEY = "security.computer.halt_insecure"
+    COMMANDS_CONFIRM_ENABLED_KEY = "security.commands.confirm.enabled"
+    COMMANDS_CONFIRM_LIST_KEY = "security.commands.confirm.list"
+    COMMANDS_CONFIRM_CUSTOM_PLUGIN = "cmd_custom"
+    COMMANDS_CONFIRM_DEFAULT = (
+        "shell_exec, python_exec, python_sys_exec, ipython_exec, ipython_sys_exec, "
+        "fs_delete_file, fs_rmdir, fs_move, fs_save_file, fs_append_file, fs_copy_file, fs_copy_dir, "
+        "fs_download_file, fs_unpack_archive, "
+        "srv_exec, srv_put, srv_rm, srv_mkdir, smtp_send, web_server_start, "
+        "win_click, win_drag, win_keys_send, win_keys_text, win_clipboard_set, win_close, win_focus, "
+        "win_foreground, win_hide, win_show, win_maximize, win_minimize, win_restore, win_move_resize, "
+        "win_set_opacity, win_always_on_top, win_cursor_set, "
+        "mouse_move, mouse_click, mouse_scroll, mouse_drag, keyboard_key, keyboard_keys, keyboard_type, "
+        "open_web_browser, navigate, go_back, go_forward, search, click, click_at, double_click, hover_at, "
+        "type, type_text_at, keypress, key_combination, scroll, scroll_at, scroll_document, "
+        "drag, drag_and_drop, move"
+    )
     PROMPT_INJECTION_ENABLED_KEY = "security.prompt_injection.enabled"
     PROMPT_INJECTION_PROMPT_KEY = "security.prompt_injection.prompt"
 
@@ -348,6 +366,124 @@ class Security:
                 if msg and msg not in messages:
                     messages.append(msg)
         return messages
+
+    # ------------------------------------------------------------------
+    # User confirmation before executing model-issued tool calls
+    # ------------------------------------------------------------------
+
+    def is_command_confirmation_enabled(self) -> bool:
+        """Return True when model-issued tool calls listed for confirmation must be approved by the user."""
+        return bool(self.window.core.config.get(self.COMMANDS_CONFIRM_ENABLED_KEY, True))
+
+    def get_confirm_command_patterns(self) -> set:
+        """Return the set of command name patterns (fnmatch style) that require confirmation."""
+        value = self.window.core.config.get(self.COMMANDS_CONFIRM_LIST_KEY, None)
+        if value is None:
+            value = self.COMMANDS_CONFIRM_DEFAULT
+        return self._parse_list(value)
+
+    def _get_custom_command_names(self) -> set:
+        """Return names of user-defined commands from the Custom Commands plugin (always confirmed)."""
+        names = set()
+        try:
+            plugins = self.window.core.plugins
+            plugin = plugins.get(self.COMMANDS_CONFIRM_CUSTOM_PLUGIN)
+            if plugin is None:
+                return names
+            items = plugin.get_option_value("cmds")
+            for item in list(items or []):
+                if isinstance(item, dict) and item.get("name"):
+                    names.add(str(item["name"]).strip().lower())
+        except Exception:
+            return set()
+        return names
+
+    def requires_command_confirmation(self, cmd_id) -> bool:
+        """Return True if the given command name matches the confirmation list."""
+        name = str(cmd_id or "").strip().lower()
+        if not name:
+            return False
+        for pattern in self.get_confirm_command_patterns():
+            if pattern == "*" or fnmatchcase(name, pattern):
+                return True
+        return name in self._get_custom_command_names()
+
+    def get_commands_requiring_confirmation(self, cmds) -> List[dict]:
+        """Filter a command list down to the commands that require user confirmation."""
+        result = []
+        if not isinstance(cmds, (list, tuple)):
+            return result
+        for cmd in cmds:
+            if isinstance(cmd, dict) and self.requires_command_confirmation(cmd.get("cmd")):
+                result.append(cmd)
+        return result
+
+    @staticmethod
+    def is_commands_confirmed(ctx) -> bool:
+        """Return True when the user already confirmed the pending commands of this ctx."""
+        extra = getattr(ctx, "extra", None)
+        return isinstance(extra, dict) and bool(extra.get("commands_confirmed", False))
+
+    def should_halt_commands(self, ctx, cmds=None) -> bool:
+        """Return True if the given (or ctx-bound) commands must wait for user confirmation."""
+        if ctx is None or not self.is_command_confirmation_enabled():
+            return False
+        if self.is_commands_confirmed(ctx):
+            return False
+        if cmds is None:
+            cmds = getattr(ctx, "cmds", None)
+        return len(self.get_commands_requiring_confirmation(cmds)) > 0
+
+    @staticmethod
+    def mark_commands_confirmed(ctx):
+        """Mark the pending commands of this ctx as explicitly confirmed by the user."""
+        if ctx is None:
+            return
+        if not isinstance(getattr(ctx, "extra", None), dict):
+            ctx.extra = {}
+        ctx.extra["commands_confirmed"] = True
+        ctx.extra.pop("commands_rejected", None)
+
+    @staticmethod
+    def mark_commands_rejected(ctx):
+        """Mark the pending commands of this ctx as rejected by the user."""
+        if ctx is None:
+            return
+        if not isinstance(getattr(ctx, "extra", None), dict):
+            ctx.extra = {}
+        ctx.extra["commands_rejected"] = True
+        ctx.extra.pop("commands_confirmed", None)
+
+    @staticmethod
+    def clear_commands_confirmation(ctx):
+        """Consume a one-shot confirmation after the commands were dispatched."""
+        if ctx is None or not isinstance(getattr(ctx, "extra", None), dict):
+            return
+        ctx.extra.pop("commands_confirmed", None)
+        ctx.extra.pop("commands_rejected", None)
+
+    def get_command_confirmation_messages(self, cmds, limit: int = 200) -> List[str]:
+        """Return one human-readable line per command that requires confirmation."""
+        lines: List[str] = []
+        for cmd in self.get_commands_requiring_confirmation(cmds):
+            name = str(cmd.get("cmd") or "").strip()
+            params = cmd.get("params")
+            preview = ""
+            if isinstance(params, dict) and params:
+                for key in ("command", "code", "path", "url", "text"):
+                    if isinstance(params.get(key), str) and params.get(key).strip():
+                        preview = params[key]
+                        break
+                if not preview:
+                    try:
+                        preview = json.dumps(params, ensure_ascii=False)
+                    except Exception:
+                        preview = str(params)
+            preview = " ".join(str(preview).split())
+            if len(preview) > limit:
+                preview = preview[:limit] + "..."
+            lines.append(f"{name}: {preview}" if preview else name)
+        return lines
 
     def ensure_command(
         self,

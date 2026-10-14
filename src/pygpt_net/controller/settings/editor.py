@@ -96,7 +96,11 @@ class Editor:
                     else:
                         options[key]['value'] = self.options[key].get('value')
                 else:
-                    options[key]['value'] = self.window.core.config.get(key)  # append current config value
+                    if self.window.core.config.has(key):
+                        options[key]['value'] = self.window.core.config.get(key)  # append current config value
+                    else:
+                        # key not yet present in the user config: show the shipped default
+                        options[key]['value'] = self.options[key].get('value')
             self.window.controller.config.load_options('config', options)
 
     def load(self):
