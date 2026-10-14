@@ -80,7 +80,7 @@ class Config(BaseConfig):
         plugin.add_option(
             "disable_ssl",
             type="bool",
-            value=True,
+            value=False,
             label="Disable SSL verify",
             description="Disables SSL verification when crawling web pages",
             tooltip="Disable SSL verify",
