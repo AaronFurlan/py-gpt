@@ -120,6 +120,7 @@ class ProfileExporter:
                 parent=self.export_dialog,
             )
             return
+        include_secrets = bool(self.export_dialog.include_secrets())
 
         stamp = datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
         default_name = f"PyGPT_export_{stamp}.zip"
@@ -167,10 +168,10 @@ class ProfileExporter:
         self.export_start_pending = True
         QTimer.singleShot(
             0,
-            lambda: self._start_export(filename, selected),
+            lambda: self._start_export(filename, selected, include_secrets),
         )
 
-    def _start_export(self, filename: str, selected):
+    def _start_export(self, filename: str, selected, include_secrets: bool = False):
         if not self.busy or not self.export_start_pending:
             return
         self.export_start_pending = False
@@ -186,6 +187,7 @@ class ProfileExporter:
             "export",
             destination=filename,
             selected=selected,
+            include_secrets=include_secrets,
         )
         self._connect_operation_worker(worker, self._export_finished)
         self.worker = worker

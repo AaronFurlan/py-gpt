@@ -67,6 +67,10 @@ class ExportProfileDialog(QDialog):
             "data": _SectionRow(trans("profile.export.section.data"), False, self),
         }
 
+        self.secrets_checkbox = QCheckBox(trans("profile.export.include_secrets"), self)
+        self.secrets_checkbox.setChecked(False)
+        self.secrets_checkbox.setToolTip(trans("profile.export.include_secrets.desc"))
+
         self.cancel_btn = QPushButton(trans("input.btn.cancel"), self)
         self.cancel_btn.clicked.connect(self.reject)
         self.export_btn = QPushButton(trans("profile.export.btn"), self)
@@ -85,6 +89,8 @@ class ExportProfileDialog(QDialog):
         for section in ("db", "config", "files", "data"):
             layout.addWidget(self.rows[section])
         layout.addSpacing(6)
+        layout.addWidget(self.secrets_checkbox)
+        layout.addSpacing(6)
         layout.addLayout(footer)
         self.setLayout(layout)
 
@@ -98,6 +104,10 @@ class ExportProfileDialog(QDialog):
             section for section, row in self.rows.items()
             if row.checkbox.isChecked()
         ]
+
+    def include_secrets(self) -> bool:
+        """Return True when the user explicitly asked to keep API keys and passwords in the archive."""
+        return bool(self.secrets_checkbox.isChecked())
 
 
 class ImportProfileDialog(QDialog):

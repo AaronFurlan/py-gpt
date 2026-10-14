@@ -76,6 +76,7 @@ class ProfileExporterWorker(QRunnable):
                     app_version=self.window.core.config.get_version(),
                     cancelled=self.is_cancelled,
                     status=self._status,
+                    include_secrets=bool(self.kwargs.get("include_secrets", False)),
                 )
                 safe_emit(self.signals, "finished", result)
                 return

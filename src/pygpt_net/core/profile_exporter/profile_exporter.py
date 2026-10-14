@@ -11,6 +11,7 @@
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -81,11 +82,83 @@ class ProfileExporter:
         "db.sqlite-shm",
     }
     COPY_CHUNK = 1024 * 1024
+
+    # Config keys whose (string) values are credentials. Matched against the
+    # lower-cased key name at every nesting level of the exported JSON files.
+    SECRET_KEY_RE = re.compile(
+        r"(api_?key|secret|password|passwd|credential|private_key|authorization|bearer"
+        r"|(^|_)token($|_)|^env$|headers)"
+    )
+    SECRET_KEY_SKIP_RE = re.compile(
+        r"(tokens|_prompt$|_env_var$|_expire_at$|_expires_in$|_get$|_extend$|_set_)"
+    )
+    SECRET_PLACEHOLDER = ""
     SPACE_RESERVE = 64 * 1024 * 1024
     SPACE_MARGIN = 1.15
 
     def __init__(self, window=None):
         self.window = window
+
+    # ------------------------------------------------------------------
+    # Secrets
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def is_secret_key(cls, key) -> bool:
+        """Return True if a JSON key name denotes a credential."""
+        name = str(key or "").strip().lower()
+        if not name:
+            return False
+        if cls.SECRET_KEY_SKIP_RE.search(name):
+            return False
+        return cls.SECRET_KEY_RE.search(name) is not None
+
+    @classmethod
+    def redact_secrets(cls, data):
+        """
+        Return a deep copy of ``data`` with credential values blanked.
+
+        Only non-empty string values are replaced, so booleans, numbers and
+        nested structures keep their shape. Returns (redacted, count).
+        """
+        count = 0
+
+        def walk(node, key=None):
+            nonlocal count
+            if isinstance(node, dict):
+                return {k: walk(v, k) for k, v in node.items()}
+            if isinstance(node, list):
+                return [walk(v, key) for v in node]
+            if isinstance(node, str) and node and cls.is_secret_key(key):
+                count += 1
+                return cls.SECRET_PLACEHOLDER
+            return node
+
+        return walk(data), count
+
+    def _write_redacted_json(
+            self,
+            archive: zipfile.ZipFile,
+            source: str,
+            arcname: str,
+            cancelled: Optional[Callable[[], bool]] = None,
+    ) -> int:
+        """Write a JSON file into the archive with credentials blanked out."""
+        self._check_cancel(cancelled)
+        try:
+            with open(source, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            # Not parseable as JSON: copy verbatim rather than lose the file.
+            self._write_file(archive, source, arcname, cancelled)
+            return 0
+        data, count = self.redact_secrets(data)
+        info = zipfile.ZipInfo.from_file(source, arcname.replace("\\", "/"))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        payload = json.dumps(data, indent=4, ensure_ascii=False).encode("utf-8")
+        with archive.open(info, "w", force_zip64=True) as dst:
+            dst.write(payload)
+        return count
 
     # ------------------------------------------------------------------
     # Discovery / sizes
@@ -328,7 +401,14 @@ class ProfileExporter:
             exported_at: Optional[str] = None,
             cancelled: Optional[Callable[[], bool]] = None,
             status: Optional[Callable[[str], None]] = None,
+            include_secrets: bool = False,
     ) -> str:
+        """
+        Export the active profile into a ZIP archive.
+
+        Credentials (API keys, tokens, passwords) stored in the root JSON config
+        files are blanked unless ``include_secrets`` is True.
+        """
         selected = [section for section in self.SECTIONS if section in set(selected)]
         if not selected:
             raise ProfileExportError("No export sections selected")
@@ -367,10 +447,12 @@ class ProfileExporter:
             )
         self.ensure_space(parent, self.estimate_export_required(sizes, selected))
 
+        redact = not bool(include_secrets) and self.SECTION_CONFIG in selected
         meta = {
             "app_version": str(app_version),
             "exported": selected,
             "exported_at": exported_at or datetime.now().astimezone().isoformat(timespec="seconds"),
+            "secrets_redacted": redact,
         }
 
         try:
@@ -423,6 +505,15 @@ class ProfileExporter:
                                 excluded=excluded,
                             )
                         elif os.path.isfile(source):
+                            if (redact and section == self.SECTION_CONFIG
+                                    and source.lower().endswith(".json")):
+                                self._write_redacted_json(
+                                    archive,
+                                    source,
+                                    f"{prefix}/{relative}",
+                                    cancelled,
+                                )
+                                continue
                             self._write_file(
                                 archive,
                                 source,
